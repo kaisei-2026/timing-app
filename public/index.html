@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Timing App</title></head>
+<body>
+  <h1 id="roleTitle">設定中...</h1>
+  <button id="mainBtn" style="font-size:40px; display:none;">START / READY</button>
+  <div id="timer" style="font-size:60px;">0.000</div>
+  <p id="status">サーバー接続中...</p>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const params = new URLSearchParams(window.location.search);
+    const role = params.get('role'); // start か goal
+    let offset = 0;
+
+    document.getElementById("roleTitle").innerText = role === 'start' ? "スタート端末" : "ゴール端末";
+    if(role === 'start') document.getElementById("mainBtn").style.display = "block";
+
+    // 時刻同期
+    setInterval(() => socket.emit("sync", Date.now()), 2000);
+    socket.on("sync_res", (data) => {
+      const rtt = (Date.now() - data.c) / 2;
+      offset = data.s - (data.c + rtt);
+      document.getElementById("status").innerText = "同期完了";
+    });
+
+    // スタートボタン処理
+    document.getElementById("mainBtn").onclick = () => {
+      const startTime = Date.now() + offset + 2000;
+      socket.emit("start_signal", { startTime });
+    };
+
+    // スタート合図受信
+    socket.on("start_broadcast", (data) => {
+      const targetTime = data.startTime;
+      const check = setInterval(() => {
+        const now = Date.now() + offset;
+        if(now >= targetTime) {
+          clearInterval(check);
+          startTimer(targetTime);
+        }
+      }, 5);
+    });
+
+    function startTimer(baseTime) {
+      setInterval(() => {
+        const now = Date.now() + offset;
+        document.getElementById("timer").innerText = ((now - baseTime)/1000).toFixed(3);
+      }, 10);
+    }
+  </script>
+</body>
+</html>
