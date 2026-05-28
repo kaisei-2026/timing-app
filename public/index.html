@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>陸上計時 QR同期・継続版</title>
+    <title>陸上計時 記録保存・連動版</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         body { font-family: sans-serif; background: #111; color: white; margin: 0; text-align: center; }
@@ -17,27 +17,27 @@
         .btn-blue { background: #007bff; color: white; }
         .btn-red { background: #dc3545; color: white; }
         .btn-green { background: #28a745; color: white; }
+        .btn-gray { background: #444; color: white; }
         #qrcode { background: white; padding: 10px; margin: 20px; }
-        #status-light { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: #555; margin-right: 5px; }
-        .online { background: #00ff00 !important; }
+        #records-list { text-align: left; background: #222; padding: 10px; border-radius: 10px; width: 100%; max-width: 300px; margin-top: 10px; max-height: 150px; overflow-y: auto; font-size: 14px; }
     </style>
 </head>
 <body>
 
-    <!-- セットアップ画面 -->
+    <!-- セットアップ -->
     <div id="setup-screen" class="screen active">
         <h1>陸上計時ツール</h1>
-        <button class="btn-blue" onclick="setupStart()">スタート端末 (A) を起動</button>
+        <button class="btn-blue" onclick="setupStart()">スタート端末 (A) 起動</button>
     </div>
 
     <!-- スタート画面 (Chromebook) -->
     <div id="start-screen" class="screen">
-        <h2>ルームID: <span id="disp-room-id"></span></h2>
+        <h2>ルーム: <span id="disp-room-id"></span></h2>
         <div id="qrcode"></div>
-        <p><span id="status-light"></span><span id="start-status">スマホの接続を待っています...</span></p>
+        <p><span id="start-status">スマホ接続待機中...</span></p>
         <div id="timer-start">00.000</div>
         <button id="start-seq-btn" class="btn-blue">スタートシーケンス開始</button>
-        <button onclick="dissolveRoom()" style="background:none; color:#777; font-size:14px; text-decoration:underline;">ルームを解散する</button>
+        <button onclick="dissolveRoom()" style="background:none; color:#777; font-size:12px;">ルーム解散</button>
     </div>
 
     <!-- ゴール画面 (スマホ) -->
@@ -48,109 +48,89 @@
             <div class="guide-line"></div>
         </div>
         <button id="manual-stop-btn" class="btn-red">GOAL / STOP</button>
-        <p id="goal-status">待機中...</p>
+        <div id="records-list"><b>【保存済み記録】</b><div id="records-content"></div></div>
     </div>
 
-    <!-- 調整画面 (スマホ) -->
+    <!-- 調整・保存画面 (スマホ) -->
     <div id="adjust-screen" class="screen">
-        <h2>フレーム調整</h2>
+        <h2>タイム確定</h2>
         <div class="viewport"><video id="playback" playsinline></video><div class="guide-line"></div></div>
-        <div id="adjust-time" style="font-size: 40px; color: #00ff00; margin: 10px;">00.000</div>
+        <div id="adjust-time" style="font-size: 50px; color: #00ff00; margin: 10px;">00.000</div>
         <div style="display:flex; gap:10px;">
-            <button style="width:70px; background:#444; color:white;" onclick="step(-0.016)">＜</button>
-            <button style="width:70px; background:#444; color:white;" onclick="step(0.016)">＞</button>
+            <button class="btn-gray" style="width:70px;" onclick="step(-0.016)">＜</button>
+            <button class="btn-gray" style="width:70px;" onclick="step(0.016)">＞</button>
         </div>
-        <button class="btn-green" onclick="resetForNext()">次の計測へ</button>
+        <button class="btn-green" onclick="saveRecord()">名前を入力して保存</button>
+        <button class="btn-gray" onclick="sendReset()">保存せずに次へ</button>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
         const urlParams = new URLSearchParams(window.location.search);
-        let roomId = urlParams.get('room');
-        let role = urlParams.get('role');
+        let roomId = urlParams.get('room'), role = urlParams.get('role');
         let offset = 0, raceStartTime = 0, videoStartTime = 0, tapTime = 0, timerInterval = null;
         let mediaRecorder, recordedChunks = [];
-        const gunSound = new Audio('https://actions.google.com/sounds/v1/weapons/fire_arm_gunshot.ogg');
+        
+        // 【音源設定】
+        const gunSound = new Audio('gun.mp3'); 
 
         if (roomId && role === 'goal') setupGoal(roomId);
 
-        // --- スタート側設定 ---
         function setupStart() {
             role = 'start';
             roomId = Math.random().toString(36).substring(2, 7).toUpperCase();
             showScreen('start-screen');
             document.getElementById('disp-room-id').innerText = roomId;
-            new QRCode(document.getElementById("qrcode"), { text: `${window.location.origin}/index.html?role=goal&room=${roomId}`, width: 180, height: 180 });
+            new QRCode(document.getElementById("qrcode"), { text: `${window.location.origin}/index.html?role=goal&room=${roomId}`, width: 160, height: 160 });
             socket.emit('join_room', roomId);
             startSync();
         }
 
-        // --- ゴール側設定 ---
         async function setupGoal(rId) {
-            role = 'goal';
-            roomId = rId;
+            role = 'goal'; roomId = rId;
             showScreen('goal-screen');
             socket.emit('join_room', roomId);
-            startSync();
-            initCamera();
+            startSync(); initCamera(); updateRecordsDisplay();
         }
 
         function startSync() {
             setInterval(() => socket.emit("sync", { c: Date.now(), roomId }), 2000);
-            socket.on("sync_res", data => {
-                const rtt = (Date.now() - data.c) / 2;
-                offset = data.s - (data.c + rtt);
-            });
+            socket.on("sync_res", d => offset = d.s - (d.c + (Date.now() - d.c)/2));
         }
 
-        // 接続通知
-        socket.on("member_joined", (data) => {
-            if (role === 'start' && data.count > 1) {
-                document.getElementById('start-status').innerText = "スマホが接続されました！";
-                document.getElementById('status-light').classList.add('online');
-            }
+        socket.on("member_joined", d => {
+            if (role === 'start' && d.count > 1) document.getElementById('start-status').innerText = "スマホ接続完了！READY";
         });
 
         // --- スタートシーケンス (5秒-2秒) ---
         document.getElementById('start-seq-btn').onclick = async () => {
-            // 音声アンロック
             gunSound.play().then(() => { gunSound.pause(); gunSound.currentTime = 0; });
-            document.getElementById('timer-start').innerText = "00.000";
-
             speak("On your marks");
-            await new Promise(r => setTimeout(r, 5000)); // 5秒待機
-            
+            await new Promise(r => setTimeout(r, 5000));
             speak("Set");
-            await new Promise(r => setTimeout(r, 2000)); // 2秒待機
-            
-            const bangTime = Date.now() + offset + 50; // 微小な補正
+            await new Promise(r => setTimeout(r, 2000));
+            const bangTime = Date.now() + offset + 50;
             socket.emit("start_signal", { roomId, startTime: bangTime });
         };
 
         function speak(m) {
-            const u = new SpeechSynthesisUtterance(m);
-            u.lang = 'en-US';
-            window.speechSynthesis.speak(u);
+            const u = new SpeechSynthesisUtterance(m); u.lang = 'en-US'; window.speechSynthesis.speak(u);
         }
 
-        socket.on("start_broadcast", data => {
-            raceStartTime = data.startTime;
-            recordedChunks = [];
-            if (role === 'goal') {
-                mediaRecorder.start();
-                videoStartTime = Date.now() + offset;
-            }
+        socket.on("start_broadcast", d => {
+            raceStartTime = d.startTime; recordedChunks = [];
+            if (role === 'goal') { mediaRecorder.start(); videoStartTime = Date.now() + offset; }
             const wait = setInterval(() => {
                 if (Date.now() + offset >= raceStartTime) {
                     clearInterval(wait);
-                    if (role === 'start') gunSound.play().catch(() => speak("Bang"));
+                    if (role === 'start') gunSound.play();
                     runTimer(raceStartTime, (role === 'goal' ? 'timer' : 'timer-start'));
                 }
             }, 2);
         });
 
-        // --- ストップ処理 ---
+        // --- ストップ・リセット ---
         document.getElementById('manual-stop-btn').onclick = () => {
             if (mediaRecorder && mediaRecorder.state === "recording") {
                 tapTime = Date.now() + offset;
@@ -160,32 +140,45 @@
             }
         };
 
-        socket.on("stop_broadcast", data => {
+        socket.on("stop_broadcast", d => {
             clearInterval(timerInterval);
             const target = (role === 'goal' ? 'timer' : 'timer-start');
-            document.getElementById(target).innerText = data.finalTime;
+            document.getElementById(target).innerText = d.finalTime;
         });
 
-        // --- ルーム解散 ---
-        function dissolveRoom() {
-            if(confirm("ルームを解散して初期画面に戻りますか？")) {
-                socket.emit("dissolve_room", roomId);
-            }
-        }
-        socket.on("room_dissolved", () => {
-            alert("ルームが解散されました。");
-            window.location.href = 'index.html';
-        });
-
-        // --- 次の計測へ (スマホ用) ---
-        function resetForNext() {
-            showScreen('goal-screen');
+        // リセット受信 (Chromebook/スマホ共通)
+        socket.on("reset_broadcast", () => {
+            clearInterval(timerInterval);
             document.getElementById('timer').innerText = "00.000";
-            document.getElementById('goal-status').innerText = "待機中...";
-            recordedChunks = [];
+            document.getElementById('timer-start').innerText = "00.000";
+            if(role === 'goal') showScreen('goal-screen');
+        });
+
+        function sendReset() {
+            socket.emit("reset_signal", roomId);
         }
 
-        // --- カメラ・録画 ---
+        // --- 記録保存 ---
+        function saveRecord() {
+            const name = prompt("名前を入力してください:");
+            if (!name) return;
+            const time = document.getElementById('adjust-time').innerText;
+            const records = JSON.parse(localStorage.getItem('running_records') || '[]');
+            records.unshift({ name, time, date: new Date().toLocaleString() });
+            localStorage.setItem('running_records', JSON.stringify(records));
+            updateRecordsDisplay();
+            sendReset();
+        }
+
+        function updateRecordsDisplay() {
+            const records = JSON.parse(localStorage.getItem('running_records') || '[]');
+            document.getElementById('records-content').innerHTML = records.map(r => `<div>${r.name}: ${r.time}秒</div>`).join('');
+        }
+
+        // --- その他 (カメラ・解散など) ---
+        function dissolveRoom() { if(confirm("解散しますか？")) socket.emit("dissolve_room", roomId); }
+        socket.on("room_dissolved", () => { alert("解散されました"); window.location.href = 'index.html'; });
+
         async function initCamera() {
             const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
             document.getElementById('preview').srcObject = stream;
@@ -193,13 +186,10 @@
             mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
             mediaRecorder.onstop = () => {
                 showScreen('adjust-screen');
-                const playback = document.getElementById('playback');
-                playback.src = URL.createObjectURL(new Blob(recordedChunks, { type: 'video/webm' }));
-                playback.onloadeddata = () => {
-                    playback.currentTime = (tapTime - videoStartTime) / 1000;
-                    updateAdjustTime();
-                };
-                playback.ontimeupdate = updateAdjustTime;
+                const pb = document.getElementById('playback');
+                pb.src = URL.createObjectURL(new Blob(recordedChunks, { type: 'video/webm' }));
+                pb.onloadeddata = () => { pb.currentTime = (tapTime - videoStartTime) / 1000; updateAdjustTime(); };
+                pb.ontimeupdate = updateAdjustTime;
             };
         }
 
@@ -207,9 +197,7 @@
             const t = (videoStartTime + (document.getElementById('playback').currentTime * 1000) - raceStartTime) / 1000;
             if (t > 0) document.getElementById('adjust-time').innerText = t.toFixed(3);
         }
-
         function step(v) { document.getElementById('playback').currentTime += v; }
-
         function runTimer(base, id) {
             if(timerInterval) clearInterval(timerInterval);
             timerInterval = setInterval(() => {
@@ -217,7 +205,6 @@
                 if(diff > 0) document.getElementById(id).innerText = diff.toFixed(3);
             }, 35);
         }
-
         function showScreen(id) {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
             document.getElementById(id).classList.add('active');
