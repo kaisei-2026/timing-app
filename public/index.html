@@ -1,54 +1,99 @@
 <!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><title>Timing App</title></head>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Timing App v2</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; background: #f0f0f0; }
+    #timer { font-size: 80px; font-weight: bold; margin: 20px 0; font-family: monospace; }
+    button { font-size: 30px; padding: 20px 40px; border-radius: 10px; border: none; cursor: pointer; color: white; }
+    #mainBtn { background: #007bff; } /* START用 青 */
+    #stopBtn { background: #dc3545; display: none; } /* STOP用 赤 */
+    #record { font-size: 24px; color: #333; margin-top: 20px; }
+  </style>
+</head>
 <body>
   <h1 id="roleTitle">設定中...</h1>
-  <button id="mainBtn" style="font-size:40px; display:none;">START / READY</button>
-  <div id="timer" style="font-size:60px;">0.000</div>
+  <div id="timer">0.000</div>
+  
+  <!-- スタートボタン（Chromebook用） -->
+  <button id="mainBtn">STARTシーケンス開始</button>
+  
+  <!-- ストップボタン（スマホ用） -->
+  <button id="stopBtn">GOAL!</button>
+
+  <div id="record"></div>
   <p id="status">サーバー接続中...</p>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
     const params = new URLSearchParams(window.location.search);
-    const role = params.get('role'); // start か goal
+    const role = params.get('role');
     let offset = 0;
+    let timerInterval = null;
+    let baseStartTime = 0;
 
-    document.getElementById("roleTitle").innerText = role === 'start' ? "スタート端末" : "ゴール端末";
-    if(role === 'start') document.getElementById("mainBtn").style.display = "block";
+    // ロール設定
+    if(role === 'start') {
+        document.getElementById("roleTitle").innerText = "スタート担当 (A)";
+        document.getElementById("mainBtn").style.display = "inline-block";
+    } else {
+        document.getElementById("roleTitle").innerText = "ゴール担当 (B)";
+        document.getElementById("mainBtn").style.display = "none";
+    }
 
     // 時刻同期
     setInterval(() => socket.emit("sync", Date.now()), 2000);
     socket.on("sync_res", (data) => {
       const rtt = (Date.now() - data.c) / 2;
       offset = data.s - (data.c + rtt);
-      document.getElementById("status").innerText = "同期完了";
+      document.getElementById("status").innerText = "同期完了(誤差微調整済)";
     });
 
-    // スタートボタン処理
+    // スタートボタンを押した時
     document.getElementById("mainBtn").onclick = () => {
+      // 2秒後に「バン！」とする時刻を計算
       const startTime = Date.now() + offset + 2000;
       socket.emit("start_signal", { startTime });
+      document.getElementById("status").innerText = "2秒後にスタートします...";
     };
 
-    // スタート合図受信
+    // スタート合図を受信した時
     socket.on("start_broadcast", (data) => {
-      const targetTime = data.startTime;
-      const check = setInterval(() => {
+      baseStartTime = data.startTime;
+      
+      // 指定時刻まで待機してからタイマー開始
+      const waiter = setInterval(() => {
         const now = Date.now() + offset;
-        if(now >= targetTime) {
-          clearInterval(check);
-          startTimer(targetTime);
+        if(now >= baseStartTime) {
+          clearInterval(waiter);
+          runTimer();
         }
       }, 5);
     });
 
-    function startTimer(baseTime) {
-      setInterval(() => {
+    function runTimer() {
+      // ゴール担当ならストップボタンを表示
+      if(role === 'goal') document.getElementById("stopBtn").style.display = "inline-block";
+      
+      if(timerInterval) clearInterval(timerInterval);
+      
+      timerInterval = setInterval(() => {
         const now = Date.now() + offset;
-        document.getElementById("timer").innerText = ((now - baseTime)/1000).toFixed(3);
+        const diff = (now - baseStartTime) / 1000;
+        document.getElementById("timer").innerText = diff.toFixed(3);
       }, 10);
     }
+
+    // ストップボタン（ゴール！）を押した時
+    document.getElementById("stopBtn").onclick = () => {
+      clearInterval(timerInterval); // タイマー停止
+      const finalTime = document.getElementById("timer").innerText;
+      document.getElementById("record").innerText = "記録: " + finalTime + " 秒";
+      document.getElementById("stopBtn").style.display = "none";
+    };
   </script>
 </body>
 </html>
