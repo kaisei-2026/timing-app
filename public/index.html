@@ -3,45 +3,44 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>陸上計時 QR同期版</title>
-    <!-- QRコード生成ライブラリ -->
+    <title>陸上計時 QR同期・継続版</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         body { font-family: sans-serif; background: #111; color: white; margin: 0; text-align: center; }
         .screen { display: none; min-height: 100vh; flex-direction: column; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box; }
         .active { display: flex; }
-        #timer { font-size: 70px; font-family: monospace; margin: 10px; font-weight: bold; }
+        #timer, #timer-start { font-size: 70px; font-family: monospace; margin: 10px; font-weight: bold; }
         .viewport { position: relative; width: 100%; max-width: 500px; aspect-ratio: 16/9; background: #000; border: 2px solid #444; }
         video { width: 100%; height: 100%; object-fit: contain; }
         .guide-line { position: absolute; left: 50%; top: 0; width: 2px; height: 100%; background: orange; z-index: 10; }
         button { padding: 15px 30px; font-size: 18px; border-radius: 10px; border: none; cursor: pointer; margin: 10px; font-weight: bold; width: 100%; max-width: 300px; }
         .btn-blue { background: #007bff; color: white; }
         .btn-red { background: #dc3545; color: white; }
+        .btn-green { background: #28a745; color: white; }
         #qrcode { background: white; padding: 10px; margin: 20px; }
-        .controls { display: flex; gap: 10px; justify-content: center; }
-        .btn-small { width: auto; background: #444; color: white; padding: 10px 20px; }
+        #status-light { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: #555; margin-right: 5px; }
+        .online { background: #00ff00 !important; }
     </style>
 </head>
 <body>
 
-    <!-- ルーム作成・選択画面 -->
+    <!-- セットアップ画面 -->
     <div id="setup-screen" class="screen active">
         <h1>陸上計時ツール</h1>
-        <button class="btn-blue" onclick="setupStart()">スタート端末 (A) として起動</button>
-        <p>または</p>
-        <p>Chromebookに表示されたQRを<br>スマホで読み取ってください</p>
+        <button class="btn-blue" onclick="setupStart()">スタート端末 (A) を起動</button>
     </div>
 
-    <!-- スタート待機画面 (Chromebook) -->
-    <div id="start-wait-screen" class="screen">
+    <!-- スタート画面 (Chromebook) -->
+    <div id="start-screen" class="screen">
         <h2>ルームID: <span id="disp-room-id"></span></h2>
         <div id="qrcode"></div>
-        <p id="start-status">スマホの接続を待っています...</p>
-        <button id="start-seq-btn" class="btn-blue" style="display:none;">スタートシーケンス開始</button>
+        <p><span id="status-light"></span><span id="start-status">スマホの接続を待っています...</span></p>
         <div id="timer-start">00.000</div>
+        <button id="start-seq-btn" class="btn-blue">スタートシーケンス開始</button>
+        <button onclick="dissolveRoom()" style="background:none; color:#777; font-size:14px; text-decoration:underline;">ルームを解散する</button>
     </div>
 
-    <!-- ゴール計測画面 (スマホ) -->
+    <!-- ゴール画面 (スマホ) -->
     <div id="goal-screen" class="screen">
         <div id="timer">00.000</div>
         <div class="viewport">
@@ -52,57 +51,46 @@
         <p id="goal-status">待機中...</p>
     </div>
 
-    <!-- フレーム調整画面 -->
+    <!-- 調整画面 (スマホ) -->
     <div id="adjust-screen" class="screen">
         <h2>フレーム調整</h2>
         <div class="viewport"><video id="playback" playsinline></video><div class="guide-line"></div></div>
         <div id="adjust-time" style="font-size: 40px; color: #00ff00; margin: 10px;">00.000</div>
-        <div class="controls">
-            <button class="btn-small" onclick="step(-0.1)">≪</button>
-            <button class="btn-small" onclick="step(-0.016)">＜</button>
-            <button class="btn-small" onclick="step(0.016)">＞</button>
-            <button class="btn-small" onclick="step(0.1)">≫</button>
+        <div style="display:flex; gap:10px;">
+            <button style="width:70px; background:#444; color:white;" onclick="step(-0.016)">＜</button>
+            <button style="width:70px; background:#444; color:white;" onclick="step(0.016)">＞</button>
         </div>
-        <button onclick="location.href='index.html'" style="background:#28a745; color:white;">次の計測へ</button>
+        <button class="btn-green" onclick="resetForNext()">次の計測へ</button>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
-        let roomId = new URLSearchParams(window.location.search).get('room');
-        let role = new URLSearchParams(window.location.search).get('role');
+        const urlParams = new URLSearchParams(window.location.search);
+        let roomId = urlParams.get('room');
+        let role = urlParams.get('role');
         let offset = 0, raceStartTime = 0, videoStartTime = 0, tapTime = 0, timerInterval = null;
         let mediaRecorder, recordedChunks = [];
         const gunSound = new Audio('https://actions.google.com/sounds/v1/weapons/fire_arm_gunshot.ogg');
 
-        // 起動時の判定
-        window.onload = () => {
-            if (roomId && role === 'goal') {
-                setupGoal(roomId);
-            }
-        };
+        if (roomId && role === 'goal') setupGoal(roomId);
 
-        // --- スタート端末の設定 ---
+        // --- スタート側設定 ---
         function setupStart() {
+            role = 'start';
             roomId = Math.random().toString(36).substring(2, 7).toUpperCase();
-            document.getElementById('setup-screen').classList.remove('active');
-            document.getElementById('start-wait-screen').classList.add('active');
+            showScreen('start-screen');
             document.getElementById('disp-room-id').innerText = roomId;
-            
-            // QRコード生成
-            const joinUrl = `${window.location.origin}/index.html?role=goal&room=${roomId}`;
-            new QRCode(document.getElementById("qrcode"), { text: joinUrl, width: 200, height: 200 });
-
+            new QRCode(document.getElementById("qrcode"), { text: `${window.location.origin}/index.html?role=goal&room=${roomId}`, width: 180, height: 180 });
             socket.emit('join_room', roomId);
-            document.getElementById('start-seq-btn').style.display = "block";
             startSync();
         }
 
-        // --- ゴール端末の設定 ---
+        // --- ゴール側設定 ---
         async function setupGoal(rId) {
+            role = 'goal';
             roomId = rId;
-            document.getElementById('setup-screen').classList.remove('active');
-            document.getElementById('goal-screen').classList.add('active');
+            showScreen('goal-screen');
             socket.emit('join_room', roomId);
             startSync();
             initCamera();
@@ -110,23 +98,33 @@
 
         function startSync() {
             setInterval(() => socket.emit("sync", { c: Date.now(), roomId }), 2000);
-            socket.on("sync_res", (data) => {
+            socket.on("sync_res", data => {
                 const rtt = (Date.now() - data.c) / 2;
                 offset = data.s - (data.c + rtt);
             });
         }
 
-        // --- スタートシーケンス ---
+        // 接続通知
+        socket.on("member_joined", (data) => {
+            if (role === 'start' && data.count > 1) {
+                document.getElementById('start-status').innerText = "スマホが接続されました！";
+                document.getElementById('status-light').classList.add('online');
+            }
+        });
+
+        // --- スタートシーケンス (5秒-2秒) ---
         document.getElementById('start-seq-btn').onclick = async () => {
             // 音声アンロック
             gunSound.play().then(() => { gunSound.pause(); gunSound.currentTime = 0; });
-            
+            document.getElementById('timer-start').innerText = "00.000";
+
             speak("On your marks");
-            await new Promise(r => setTimeout(r, 3000));
-            speak("Set");
+            await new Promise(r => setTimeout(r, 5000)); // 5秒待機
             
-            const randomDelay = 1500 + Math.random() * 1500;
-            const bangTime = Date.now() + offset + randomDelay;
+            speak("Set");
+            await new Promise(r => setTimeout(r, 2000)); // 2秒待機
+            
+            const bangTime = Date.now() + offset + 50; // 微小な補正
             socket.emit("start_signal", { roomId, startTime: bangTime });
         };
 
@@ -136,18 +134,18 @@
             window.speechSynthesis.speak(u);
         }
 
-        socket.on("start_broadcast", (data) => {
+        socket.on("start_broadcast", data => {
             raceStartTime = data.startTime;
             recordedChunks = [];
-            if (role === 'goal' && mediaRecorder) {
+            if (role === 'goal') {
                 mediaRecorder.start();
                 videoStartTime = Date.now() + offset;
             }
             const wait = setInterval(() => {
                 if (Date.now() + offset >= raceStartTime) {
                     clearInterval(wait);
-                    if (role !== 'goal') gunSound.play().catch(() => speak("Bang"));
-                    runDisplayTimer(raceStartTime, (role === 'goal' ? 'timer' : 'timer-start'));
+                    if (role === 'start') gunSound.play().catch(() => speak("Bang"));
+                    runTimer(raceStartTime, (role === 'goal' ? 'timer' : 'timer-start'));
                 }
             }, 2);
         });
@@ -162,11 +160,30 @@
             }
         };
 
-        socket.on("stop_broadcast", (data) => {
+        socket.on("stop_broadcast", data => {
             clearInterval(timerInterval);
             const target = (role === 'goal' ? 'timer' : 'timer-start');
             document.getElementById(target).innerText = data.finalTime;
         });
+
+        // --- ルーム解散 ---
+        function dissolveRoom() {
+            if(confirm("ルームを解散して初期画面に戻りますか？")) {
+                socket.emit("dissolve_room", roomId);
+            }
+        }
+        socket.on("room_dissolved", () => {
+            alert("ルームが解散されました。");
+            window.location.href = 'index.html';
+        });
+
+        // --- 次の計測へ (スマホ用) ---
+        function resetForNext() {
+            showScreen('goal-screen');
+            document.getElementById('timer').innerText = "00.000";
+            document.getElementById('goal-status').innerText = "待機中...";
+            recordedChunks = [];
+        }
 
         // --- カメラ・録画 ---
         async function initCamera() {
@@ -175,11 +192,9 @@
             mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
             mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
             mediaRecorder.onstop = () => {
-                document.getElementById('goal-screen').classList.remove('active');
-                document.getElementById('adjust-screen').classList.add('active');
-                const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                showScreen('adjust-screen');
                 const playback = document.getElementById('playback');
-                playback.src = URL.createObjectURL(blob);
+                playback.src = URL.createObjectURL(new Blob(recordedChunks, { type: 'video/webm' }));
                 playback.onloadeddata = () => {
                     playback.currentTime = (tapTime - videoStartTime) / 1000;
                     updateAdjustTime();
@@ -195,12 +210,17 @@
 
         function step(v) { document.getElementById('playback').currentTime += v; }
 
-        function runDisplayTimer(base, targetId) {
+        function runTimer(base, id) {
             if(timerInterval) clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 const diff = (Date.now() + offset - base) / 1000;
-                if(diff > 0) document.getElementById(targetId).innerText = diff.toFixed(3);
+                if(diff > 0) document.getElementById(id).innerText = diff.toFixed(3);
             }, 35);
+        }
+
+        function showScreen(id) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
         }
     </script>
 </body>
