@@ -6,10 +6,8 @@ const io = require("socket.io")(http, { cors: { origin: "*" } });
 app.use(express.static("public"));
 
 io.on("connection", (socket) => {
-  // 部屋に参加
   socket.on("join_room", (roomId) => {
     socket.join(roomId);
-    // 部屋に誰かが入ったら、その部屋の全員に通知（接続確認用）
     io.to(roomId).emit("member_joined", { count: io.sockets.adapter.rooms.get(roomId)?.size });
   });
 
@@ -25,7 +23,11 @@ io.on("connection", (socket) => {
     io.to(data.roomId).emit("stop_broadcast", data);
   });
 
-  // ルーム解散
+  // リセット（次へ）信号
+  socket.on("reset_signal", (roomId) => {
+    io.to(roomId).emit("reset_broadcast");
+  });
+
   socket.on("dissolve_room", (roomId) => {
     io.to(roomId).emit("room_dissolved");
   });
