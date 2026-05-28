@@ -3,35 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>陸上計時ツール v3.1</title>
+    <title>陸上計時ツール v3.2</title>
     <style>
         body { font-family: sans-serif; background: #111; color: white; margin: 0; text-align: center; }
         .screen { display: none; min-height: 100vh; flex-direction: column; align-items: center; justify-content: center; }
         .active { display: flex; }
         
-        #timer { font-size: 80px; font-family: monospace; margin: 10px; color: #fff; }
-        #status { color: #00ff00; margin-bottom: 20px; font-size: 14px; }
+        #timer { font-size: 85px; font-family: 'Courier New', Courier, monospace; margin: 10px; color: #fff; font-weight: bold; }
+        #status { color: #00ff00; margin-bottom: 20px; font-size: 16px; height: 1.2em; }
 
-        /* ビデオエリアの改善 */
-        .viewport { position: relative; width: 95vw; max-width: 600px; aspect-ratio: 16/9; background: #000; border: 2px solid #444; }
-        video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+        .viewport { position: relative; width: 95vw; max-width: 600px; aspect-ratio: 16/9; background: #000; border: 2px solid #444; overflow: hidden; }
+        video { width: 100%; height: 100%; object-fit: contain; }
         .guide-line { position: absolute; left: 50%; top: 0; width: 2px; height: 100%; background: orange; z-index: 10; pointer-events: none; }
         
-        button { padding: 15px 30px; font-size: 18px; border-radius: 8px; border: none; cursor: pointer; margin: 5px; font-weight: bold; }
-        .btn-start { background: #007bff; color: white; width: 80%; }
-        .btn-stop { background: #dc3545; color: white; width: 80%; }
-        .btn-confirm { background: #28a745; color: white; width: 80%; }
+        button { padding: 18px 30px; font-size: 20px; border-radius: 12px; border: none; cursor: pointer; margin: 5px; font-weight: bold; transition: 0.2s; }
+        button:active { transform: scale(0.95); opacity: 0.8; }
+        .btn-start { background: #007bff; color: white; width: 85%; }
+        .btn-stop { background: #dc3545; color: white; width: 85%; }
+        .btn-confirm { background: #28a745; color: white; width: 85%; }
         .controls { margin-top: 15px; display: flex; gap: 10px; justify-content: center; }
-        .btn-small { padding: 15px 25px; background: #444; color: white; font-size: 20px; }
+        .btn-small { padding: 15px 25px; background: #444; color: white; font-size: 24px; min-width: 70px; }
 
-        #final-record { font-size: 32px; color: yellow; margin: 10px; }
+        #debug-info { font-size: 12px; color: #666; margin-top: 10px; }
     </style>
 </head>
 <body>
 
     <!-- 1. メイン画面 -->
     <div id="main-screen" class="screen active">
-        <h1 id="role-title">Loading...</h1>
+        <h1 id="role-title">接続中...</h1>
         <div id="timer">00.000</div>
         <div id="status">同期中...</div>
         
@@ -48,19 +48,20 @@
 
     <!-- 2. フレーム微調整画面 -->
     <div id="adjust-screen" class="screen">
-        <h2 style="margin: 10px;">フレーム調整</h2>
+        <h2 style="margin: 10px;">フレーム微調整</h2>
         <div class="viewport">
-            <video id="playback" playsinline controls></video>
+            <video id="playback" playsinline></video>
             <div class="guide-line"></div>
         </div>
-        <div id="adjust-time" style="font-size: 40px; margin: 10px; color: yellow;">00.000</div>
+        <div id="adjust-time" style="font-size: 48px; margin: 15px; color: #00ff00; font-family: monospace;">00.000</div>
         <div class="controls">
             <button class="btn-small" onclick="step(-0.1)">≪</button>
             <button class="btn-small" onclick="step(-0.016)">＜</button>
             <button class="btn-small" onclick="step(0.016)">＞</button>
             <button class="btn-small" onclick="step(0.1)">≫</button>
         </div>
-        <button onclick="location.reload()" class="btn-confirm" style="margin-top:20px;">リセットして次へ</button>
+        <button onclick="location.reload()" class="btn-confirm" style="margin-top:25px;">次の計測へ</button>
+        <div id="debug-info"></div>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
@@ -68,79 +69,81 @@
         const socket = io();
         const params = new URLSearchParams(window.location.search);
         const role = params.get('role');
+        
         let offset = 0;
-        let raceStartTime = 0;
-        let videoStartTime = 0;
+        let raceStartTime = 0;   // 競技開始の同期時刻
+        let videoStartTime = 0;  // 録画開始の同期時刻
+        let tapTime = 0;        // ストップボタンを押した同期時刻
+        let timerInterval = null;
         let mediaRecorder;
         let recordedChunks = [];
-        let timerInterval = null;
 
-        // 音声の準備
-        const gunSound = new Audio('https://actions.google.com/sounds/v1/weapons/fire_arm_gunshot.ogg'); // サンプル音源
+        const gunSound = new Audio('https://actions.google.com/sounds/v1/weapons/fire_arm_gunshot.ogg');
 
-        // 初期設定
+        // ロール判定
         if (role === 'start') {
-            document.getElementById('role-title').innerText = "スタート担当 (A)";
+            document.getElementById('role-title').innerText = "スタート端末 (A)";
             document.getElementById('start-seq-btn').style.display = "block";
         } else {
-            document.getElementById('role-title').innerText = "ゴール担当 (B)";
+            document.getElementById('role-title').innerText = "ゴール端末 (B)";
             document.getElementById('goal-ui').style.display = "flex";
             initCamera();
         }
 
-        // 時刻同期
+        // --- 同期ロジック ---
         setInterval(() => socket.emit("sync", Date.now()), 2000);
         socket.on("sync_res", (data) => {
-            const rtt = (Date.now() - data.c) / 2;
-            offset = data.s - (data.c + rtt);
+            const rtt = (Date.now() - data.clientTime) / 2;
+            offset = data.serverTime - (data.clientTime + rtt);
             document.getElementById('status').innerText = "同期完了";
         });
 
-        // --- スタート(A)側の送信処理 ---
+        // --- スタート(A) 実行 ---
         document.getElementById('start-seq-btn').onclick = async () => {
-            const uttr = new SpeechSynthesisUtterance("On your marks");
-            uttr.lang = 'en-US';
-            window.speechSynthesis.speak(uttr);
-            
+            speak("On your marks");
             await new Promise(r => setTimeout(r, 3000));
+            speak("Set");
             
-            const uttr2 = new SpeechSynthesisUtterance("Set");
-            uttr2.lang = 'en-US';
-            window.speechSynthesis.speak(uttr2);
-
             const randomDelay = 1500 + Math.random() * 1500;
             const bangTime = Date.now() + offset + randomDelay;
+            
             socket.emit("start_signal", { startTime: bangTime });
         };
 
-        // --- 全端末共通：スタート信号受信 ---
+        function speak(msg) {
+            const uttr = new SpeechSynthesisUtterance(msg);
+            uttr.lang = 'en-US';
+            window.speechSynthesis.speak(uttr);
+        }
+
+        // --- 全端末：スタート受信 ---
         socket.on("start_broadcast", (data) => {
             raceStartTime = data.startTime;
             recordedChunks = [];
             
-            if (role === 'goal') {
+            if (role === 'goal' && mediaRecorder) {
                 mediaRecorder.start();
                 videoStartTime = Date.now() + offset; 
             }
             
-            const wait = setInterval(() => {
+            const waitStart = setInterval(() => {
                 if (Date.now() + offset >= raceStartTime) {
                     if (role === 'start') gunSound.play();
                     startDisplayTimer(raceStartTime);
-                    clearInterval(wait);
+                    clearInterval(waitStart);
                 }
             }, 2);
         });
 
-        // --- 全端末共通：ストップ信号受信 ---
+        // --- 全端末：ストップ受信（スタート側もこれで止まる） ---
         socket.on("stop_broadcast", (data) => {
             clearInterval(timerInterval);
             document.getElementById('timer').innerText = data.finalTime;
-            document.getElementById('status').innerText = "計測終了";
-            document.getElementById('status').style.color = "orange";
+            document.getElementById('status').innerText = "計測完了";
+            document.getElementById('status').style.color = "yellow";
         });
 
-        // --- ゴール(B)側のカメラ・停止処理 ---
+        // --- ゴール(B) カメラと停止 ---
         async function initCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -149,22 +152,31 @@
                 });
                 document.getElementById('preview').srcObject = stream;
                 mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-                mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
+                mediaRecorder.ondataavailable = e => { if(e.data.size > 0) recordedChunks.push(e.data); };
                 mediaRecorder.onstop = showAdjustScreen;
             } catch (err) {
-                alert("カメラの起動に失敗しました。HTTPSで接続しているか確認してください。");
+                alert("カメラ接続エラー");
             }
         }
 
-        document.getElementById('manual-stop-btn').onclick = () => {
-            if (mediaRecorder && mediaRecorder.state !== "inactive") {
-                mediaRecorder.stop();
-                const finalTime = document.getElementById('timer').innerText;
-                socket.emit("stop_signal", { finalTime: finalTime });
+        document.getElementById('manual-stop-btn').onclick = function() {
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+                // 1. タップした瞬間の時刻を記録
+                tapTime = Date.now() + offset;
+                const tapRaceTime = ((tapTime - raceStartTime) / 1000).toFixed(3);
+                
+                // 2. 全員に停止信号を送る（これでスタート端末も止まる）
+                socket.emit("stop_signal", { finalTime: tapRaceTime });
+
+                // 3. 1秒待ってから録画停止
+                document.getElementById('status').innerText = "後処理中(1s)...";
+                setTimeout(() => {
+                    mediaRecorder.stop();
+                }, 1000);
             }
         };
 
-        // --- ビデオ調整画面の表示 ---
+        // --- ビデオ調整画面 ---
         function showAdjustScreen() {
             document.getElementById('main-screen').classList.remove('active');
             document.getElementById('adjust-screen').classList.add('active');
@@ -174,14 +186,24 @@
             const playback = document.getElementById('playback');
             playback.src = url;
             
-            playback.ontimeupdate = () => {
-                const currentVideoTime = playback.currentTime * 1000;
-                // レースタイム = (ビデオ撮影開始時刻 + 今の再生位置) - 実際のスタート時刻
-                const totalTime = (videoStartTime + currentVideoTime - raceStartTime) / 1000;
-                if(totalTime > 0) {
-                    document.getElementById('adjust-time').innerText = totalTime.toFixed(3);
-                }
+            playback.onloadeddata = () => {
+                // タップした瞬間のビデオ内位置(秒) = (タップ時刻 - 録画開始時刻) / 1000
+                const seekTo = (tapTime - videoStartTime) / 1000;
+                playback.currentTime = seekTo;
+                updateAdjustTime();
             };
+
+            playback.ontimeupdate = updateAdjustTime;
+        }
+
+        function updateAdjustTime() {
+            const playback = document.getElementById('playback');
+            const currentVideoTime = playback.currentTime * 1000;
+            // レースタイム = (録画開始時刻 + 現在の再生位置) - レース開始時刻
+            const realTime = (videoStartTime + currentVideoTime - raceStartTime) / 1000;
+            if (realTime > 0) {
+                document.getElementById('adjust-time').innerText = realTime.toFixed(3);
+            }
         }
 
         function step(val) {
@@ -195,7 +217,7 @@
             timerInterval = setInterval(() => {
                 const diff = (Date.now() + offset - base) / 1000;
                 if(diff > 0) document.getElementById('timer').innerText = diff.toFixed(3);
-            }, 30);
+            }, 35);
         }
     </script>
 </body>
