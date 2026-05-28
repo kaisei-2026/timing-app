@@ -6,25 +6,28 @@ const io = require("socket.io")(http, { cors: { origin: "*" } });
 app.use(express.static("public"));
 
 io.on("connection", (socket) => {
-  // 部屋に参加する
+  // 部屋に参加
   socket.on("join_room", (roomId) => {
     socket.join(roomId);
-    console.log(`User joined room: ${roomId}`);
+    // 部屋に誰かが入ったら、その部屋の全員に通知（接続確認用）
+    io.to(roomId).emit("member_joined", { count: io.sockets.adapter.rooms.get(roomId)?.size });
   });
 
-  // その部屋だけに時刻同期を返す
   socket.on("sync", (data) => {
     socket.emit("sync_res", { c: data.c, s: Date.now() });
   });
 
-  // その部屋だけにスタート信号を送る
   socket.on("start_signal", (data) => {
     io.to(data.roomId).emit("start_broadcast", data);
   });
 
-  // その部屋だけにストップ信号を送る
   socket.on("stop_signal", (data) => {
     io.to(data.roomId).emit("stop_broadcast", data);
+  });
+
+  // ルーム解散
+  socket.on("dissolve_room", (roomId) => {
+    io.to(roomId).emit("room_dissolved");
   });
 });
 
