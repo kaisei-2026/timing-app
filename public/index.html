@@ -3,62 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>陸上計時 記録保存・連動版2</title>
+    <title>陸上計時 精密同期版</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         body { font-family: sans-serif; background: #111; color: white; margin: 0; text-align: center; }
         .screen { display: none; min-height: 100vh; flex-direction: column; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box; }
         .active { display: flex; }
-        #timer, #timer-start { font-size: 70px; font-family: monospace; margin: 10px; font-weight: bold; }
-        .viewport { position: relative; width: 100%; max-width: 500px; aspect-ratio: 16/9; background: #000; border: 2px solid #444; }
+        #timer, #timer-start { font-size: 80px; font-family: monospace; margin: 10px; font-weight: bold; color: #fff; }
+        .viewport { position: relative; width: 100%; max-width: 500px; aspect-ratio: 16/9; background: #000; border: 2px solid #444; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: contain; }
         .guide-line { position: absolute; left: 50%; top: 0; width: 2px; height: 100%; background: orange; z-index: 10; }
-        button { padding: 15px 30px; font-size: 18px; border-radius: 10px; border: none; cursor: pointer; margin: 10px; font-weight: bold; width: 100%; max-width: 300px; }
+        button { padding: 18px 30px; font-size: 20px; border-radius: 12px; border: none; cursor: pointer; margin: 10px; font-weight: bold; width: 100%; max-width: 320px; }
         .btn-blue { background: #007bff; color: white; }
         .btn-red { background: #dc3545; color: white; }
         .btn-green { background: #28a745; color: white; }
         .btn-gray { background: #444; color: white; }
         #qrcode { background: white; padding: 10px; margin: 20px; }
-        #records-list { text-align: left; background: #222; padding: 10px; border-radius: 10px; width: 100%; max-width: 300px; margin-top: 10px; max-height: 150px; overflow-y: auto; font-size: 14px; }
+        #records-list { text-align: left; background: #222; padding: 15px; border-radius: 10px; width: 100%; max-width: 320px; margin-top: 15px; max-height: 150px; overflow-y: auto; }
     </style>
 </head>
 <body>
 
-    <!-- セットアップ -->
     <div id="setup-screen" class="screen active">
         <h1>陸上計時ツール</h1>
         <button class="btn-blue" onclick="setupStart()">スタート端末 (A) 起動</button>
     </div>
 
-    <!-- スタート画面 (Chromebook) -->
     <div id="start-screen" class="screen">
         <h2>ルーム: <span id="disp-room-id"></span></h2>
         <div id="qrcode"></div>
-        <p><span id="start-status">スマホ接続待機中...</span></p>
+        <p id="start-status">スマホ接続待機中...</p>
         <div id="timer-start">00.000</div>
         <button id="start-seq-btn" class="btn-blue">スタートシーケンス開始</button>
-        <button onclick="dissolveRoom()" style="background:none; color:#777; font-size:12px;">ルーム解散</button>
+        <button onclick="dissolveRoom()" style="background:none; color:#777; font-size:12px; border:none; text-decoration:underline;">ルーム解散</button>
     </div>
 
-    <!-- ゴール画面 (スマホ) -->
     <div id="goal-screen" class="screen">
         <div id="timer">00.000</div>
-        <div class="viewport">
-            <video id="preview" autoplay playsinline muted></video>
-            <div class="guide-line"></div>
-        </div>
+        <div class="viewport"><video id="preview" autoplay playsinline muted></video><div class="guide-line"></div></div>
         <button id="manual-stop-btn" class="btn-red">GOAL / STOP</button>
         <div id="records-list"><b>【保存済み記録】</b><div id="records-content"></div></div>
     </div>
 
-    <!-- 調整・保存画面 (スマホ) -->
     <div id="adjust-screen" class="screen">
         <h2>タイム確定</h2>
         <div class="viewport"><video id="playback" playsinline></video><div class="guide-line"></div></div>
-        <div id="adjust-time" style="font-size: 50px; color: #00ff00; margin: 10px;">00.000</div>
-        <div style="display:flex; gap:10px;">
-            <button class="btn-gray" style="width:70px;" onclick="step(-0.016)">＜</button>
-            <button class="btn-gray" style="width:70px;" onclick="step(0.016)">＞</button>
+        <div id="adjust-time" style="font-size: 55px; color: #00ff00; margin: 10px; font-family: monospace;">00.000</div>
+        <div style="display:flex; gap:15px;">
+            <button class="btn-gray" style="width:80px;" onclick="step(-0.016)">＜</button>
+            <button class="btn-gray" style="width:80px;" onclick="step(0.016)">＞</button>
         </div>
         <button class="btn-green" onclick="saveRecord()">名前を入力して保存</button>
         <button class="btn-gray" onclick="sendReset()">保存せずに次へ</button>
@@ -71,27 +64,26 @@
         let roomId = urlParams.get('room'), role = urlParams.get('role');
         let offset = 0, raceStartTime = 0, videoStartTime = 0, tapTime = 0, timerInterval = null;
         let mediaRecorder, recordedChunks = [];
-        
-        // 【音源設定】
-        const gunSound = new Audio('gun.mp3'); 
+
+        // --- 音声エンジンの準備 (Web Audio API) ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        let gunBuffer = null;
+        fetch('gun.mp3').then(r => r.arrayBuffer()).then(b => audioCtx.decodeAudioData(b)).then(buf => gunBuffer = buf);
+
+        const AUDIO_LATENCY_OFFSET = 100; // 【重要】音出しのラグ補正(ミリ秒)。音が遅い場合はこの数字を大きくする。
 
         if (roomId && role === 'goal') setupGoal(roomId);
 
         function setupStart() {
-            role = 'start';
-            roomId = Math.random().toString(36).substring(2, 7).toUpperCase();
-            showScreen('start-screen');
-            document.getElementById('disp-room-id').innerText = roomId;
+            role = 'start'; roomId = Math.random().toString(36).substring(2, 7).toUpperCase();
+            showScreen('start-screen'); document.getElementById('disp-room-id').innerText = roomId;
             new QRCode(document.getElementById("qrcode"), { text: `${window.location.origin}/index.html?role=goal&room=${roomId}`, width: 160, height: 160 });
-            socket.emit('join_room', roomId);
-            startSync();
+            socket.emit('join_room', roomId); startSync();
         }
 
         async function setupGoal(rId) {
-            role = 'goal'; roomId = rId;
-            showScreen('goal-screen');
-            socket.emit('join_room', roomId);
-            startSync(); initCamera(); updateRecordsDisplay();
+            role = 'goal'; roomId = rId; showScreen('goal-screen');
+            socket.emit('join_room', roomId); startSync(); initCamera(); updateRecordsDisplay();
         }
 
         function startSync() {
@@ -103,14 +95,12 @@
             if (role === 'start' && d.count > 1) document.getElementById('start-status').innerText = "スマホ接続完了！READY";
         });
 
-        // --- スタートシーケンス (5秒-2秒) ---
+        // --- スタートシーケンス ---
         document.getElementById('start-seq-btn').onclick = async () => {
-            gunSound.play().then(() => { gunSound.pause(); gunSound.currentTime = 0; });
-            speak("On your marks");
-            await new Promise(r => setTimeout(r, 5000));
-            speak("Set");
-            await new Promise(r => setTimeout(r, 2000));
-            const bangTime = Date.now() + offset + 50;
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            speak("On your marks"); await new Promise(r => setTimeout(r, 5000));
+            speak("Set"); await new Promise(r => setTimeout(r, 2000));
+            const bangTime = Date.now() + offset + 100; // 確実に未来の時刻を指定
             socket.emit("start_signal", { roomId, startTime: bangTime });
         };
 
@@ -120,17 +110,35 @@
 
         socket.on("start_broadcast", d => {
             raceStartTime = d.startTime; recordedChunks = [];
+            let soundTriggered = false;
+
             if (role === 'goal') { mediaRecorder.start(); videoStartTime = Date.now() + offset; }
+            
             const wait = setInterval(() => {
-                if (Date.now() + offset >= raceStartTime) {
+                const now = Date.now() + offset;
+                
+                // 【対策】タイマー開始の少し前に音出し命令を出す
+                if (role === 'start' && !soundTriggered && now >= raceStartTime - AUDIO_LATENCY_OFFSET) {
+                    playGunSound();
+                    soundTriggered = true;
+                }
+
+                if (now >= raceStartTime) {
                     clearInterval(wait);
-                    if (role === 'start') gunSound.play();
                     runTimer(raceStartTime, (role === 'goal' ? 'timer' : 'timer-start'));
                 }
             }, 2);
         });
 
-        // --- ストップ・リセット ---
+        function playGunSound() {
+            if (!gunBuffer) return;
+            const source = audioCtx.createBufferSource();
+            source.buffer = gunBuffer;
+            source.connect(audioCtx.destination);
+            source.start(0);
+        }
+
+        // --- ストップ・リセット連動 ---
         document.getElementById('manual-stop-btn').onclick = () => {
             if (mediaRecorder && mediaRecorder.state === "recording") {
                 tapTime = Date.now() + offset;
@@ -146,7 +154,6 @@
             document.getElementById(target).innerText = d.finalTime;
         });
 
-        // リセット受信 (Chromebook/スマホ共通)
         socket.on("reset_broadcast", () => {
             clearInterval(timerInterval);
             document.getElementById('timer').innerText = "00.000";
@@ -154,11 +161,8 @@
             if(role === 'goal') showScreen('goal-screen');
         });
 
-        function sendReset() {
-            socket.emit("reset_signal", roomId);
-        }
+        function sendReset() { socket.emit("reset_signal", roomId); }
 
-        // --- 記録保存 ---
         function saveRecord() {
             const name = prompt("名前を入力してください:");
             if (!name) return;
@@ -172,12 +176,11 @@
 
         function updateRecordsDisplay() {
             const records = JSON.parse(localStorage.getItem('running_records') || '[]');
-            document.getElementById('records-content').innerHTML = records.map(r => `<div>${r.name}: ${r.time}秒</div>`).join('');
+            document.getElementById('records-content').innerHTML = records.slice(0, 5).map(r => `<div>${r.name}: ${r.time}s</div>`).join('');
         }
 
-        // --- その他 (カメラ・解散など) ---
         function dissolveRoom() { if(confirm("解散しますか？")) socket.emit("dissolve_room", roomId); }
-        socket.on("room_dissolved", () => { alert("解散されました"); window.location.href = 'index.html'; });
+        socket.on("room_dissolved", () => { window.location.href = 'index.html'; });
 
         async function initCamera() {
             const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
