@@ -3,21 +3,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>陸上計時 FPS最大化版</title>
+    <title>陸上計時 記録管理版</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #111; color: white; margin: 0; text-align: center; overflow: hidden; }
+        body { font-family: sans-serif; background: #111; color: white; margin: 0; text-align: center; overflow-x: hidden; }
         .screen { display: none; min-height: 100vh; flex-direction: column; align-items: center; justify-content: center; padding: 15px; box-sizing: border-box; }
         .active { display: flex; }
         #timer, #timer-start { font-size: 75px; font-family: 'Courier New', monospace; margin: 5px; font-weight: bold; }
         .viewport { position: relative; width: 100%; max-width: 500px; aspect-ratio: 16/9; background: #000; border: 2px solid #444; border-radius: 8px; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: contain; }
         .guide-line { position: absolute; left: 50%; top: 0; width: 2px; height: 100%; background: #ffea00; z-index: 10; }
-        button { border-radius: 12px; border: none; cursor: pointer; font-weight: bold; transition: 0.1s; }
+        button { border-radius: 12px; border: none; cursor: pointer; font-weight: bold; transition: 0.1s; -webkit-tap-highlight-color: transparent; }
         .btn-blue { background: #007bff; color: white; padding: 18px; width: 100%; max-width: 320px; font-size: 20px; }
         .btn-red { background: #dc3545; color: white; padding: 20px; width: 100%; max-width: 320px; font-size: 22px; }
         .btn-green { background: #28a745; color: white; padding: 15px; width: 100%; max-width: 320px; font-size: 18px; }
         .btn-gray { background: #333; color: white; padding: 10px; font-size: 14px; }
+        
+        /* 記録リストのスタイル */
+        #records-list { text-align: left; background: #222; padding: 15px; border-radius: 10px; width: 100%; max-width: 340px; margin-top: 15px; box-sizing: border-box; }
+        .record-item { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #444; padding: 8px 0; }
+        .record-info { display: flex; flex-direction: column; }
+        .record-name { font-weight: bold; color: #fff; }
+        .record-time { font-size: 18px; color: #00ff00; font-family: monospace; }
+        .btn-del { background: #555; color: #eee; font-size: 12px; padding: 5px 10px; border-radius: 5px; width: auto; }
+        .btn-del-all { background: none; color: #ff4444; font-size: 12px; text-decoration: underline; margin-top: 10px; width: auto; }
+
         .step-controls { display: flex; gap: 8px; margin: 15px 0; width: 100%; max-width: 350px; justify-content: center; }
         .btn-step { flex: 1; height: 60px; background: #444; color: white; font-size: 16px; }
         #fps-display { font-size: 12px; color: #00ff00; margin-bottom: 5px; }
@@ -40,7 +50,6 @@
         <button class="btn-gray" onclick="dissolveRoom()">ルーム解散</button>
     </div>
 
-    <!-- スマホ側：カメラ設定画面 -->
     <div id="goal-setup-screen" class="screen">
         <h2>カメラ設定</h2>
         <p>録画FPSを選択してください</p>
@@ -54,10 +63,18 @@
     </div>
 
     <div id="goal-screen" class="screen">
-        <div id="fps-display">推定FPS: --</div>
+        <div id="fps-display">適用FPS: --</div>
         <div id="timer">00.000</div>
         <div class="viewport"><video id="preview" autoplay playsinline muted></video><div class="guide-line"></div></div>
         <button id="manual-stop-btn" class="btn-red">GOAL / STOP</button>
+        
+        <div id="records-list">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <b>【保存済み記録】</b>
+                <button class="btn-del-all" onclick="clearAllRecords()">全削除</button>
+            </div>
+            <div id="records-content"></div>
+        </div>
     </div>
 
     <div id="adjust-screen" class="screen">
@@ -70,7 +87,7 @@
             <button class="btn-step" onclick="step(0.1)">≫ +0.1s</button>
         </div>
         <button class="btn-green" onclick="saveRecord()">名前を入力して保存</button>
-        <button class="btn-gray" style="width:100%; max-width:320px;" onclick="sendReset()">次へ</button>
+        <button class="btn-gray" style="width:100%; max-width:320px;" onclick="sendReset()">保存せずに次へ</button>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
@@ -82,15 +99,12 @@
         let mediaRecorder, recordedChunks = [];
         let currentStream = null;
 
-        // 音声設定
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         let gunBuffer = null;
         fetch('gun.mp3').then(r => r.arrayBuffer()).then(b => audioCtx.decodeAudioData(b)).then(buf => gunBuffer = buf);
         const AUDIO_LATENCY_OFFSET = 120;
 
-        if (roomId && role === 'goal') {
-            showScreen('goal-setup-screen');
-        }
+        if (roomId && role === 'goal') showScreen('goal-setup-screen');
 
         function setupStart() {
             role = 'start'; roomId = Math.random().toString(36).substring(2, 7).toUpperCase();
@@ -116,25 +130,10 @@
         async function initCamera(fps) {
             if (currentStream) currentStream.getTracks().forEach(t => t.stop());
             try {
-                // ブラウザに最大性能を要求する
-                const constraints = {
-                    video: {
-                        facingMode: "environment",
-                        frameRate: { ideal: parseInt(fps), max: 240 },
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    },
-                    audio: false
-                };
-                
+                const constraints = { video: { facingMode: "environment", frameRate: { ideal: parseInt(fps), max: 240 }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
                 const stream = await navigator.mediaDevices.getUserMedia(constraints);
                 currentStream = stream;
-                const track = stream.getVideoTracks()[0];
-                const settings = track.getSettings();
-                
-                // 実際に適用されたFPSを表示
-                document.getElementById('fps-display').innerText = `適用FPS: ${settings.frameRate || '不明'} (要求:${fps})`;
-                
+                document.getElementById('fps-display').innerText = `適用FPS: ${stream.getVideoTracks()[0].getSettings().frameRate || '不明'}`;
                 document.getElementById('preview').srcObject = stream;
                 mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
                 mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
@@ -145,15 +144,10 @@
                     pb.onloadeddata = () => { pb.currentTime = (tapTime - videoStartTime) / 1000; updateAdjustTime(); };
                     pb.ontimeupdate = updateAdjustTime;
                 };
-            } catch (err) {
-                alert("カメラ起動エラー: " + err.message);
-            }
+            } catch (err) { alert("カメラ起動エラー: " + err.message); }
         }
 
-        // --- スタート・ゴール・保存等のロジック (前回同様) ---
-        socket.on("member_joined", d => {
-            if (role === 'start' && d.count > 1) document.getElementById('start-status').innerText = "スマホ接続完了！READY";
-        });
+        socket.on("member_joined", d => { if (role === 'start' && d.count > 1) document.getElementById('start-status').innerText = "スマホ接続完了！READY"; });
 
         document.getElementById('start-seq-btn').onclick = async () => {
             if(audioCtx.state === 'suspended') audioCtx.resume();
@@ -191,52 +185,77 @@
         socket.on("stop_broadcast", d => {
             clearInterval(timerInterval);
             const target = (role === 'goal' ? 'timer' : 'timer-start');
-            document.getElementById(target).innerText = d.finalTime;
+            const el = document.getElementById(target);
+            if(el) el.innerText = d.finalTime;
         });
 
         socket.on("reset_broadcast", () => {
             clearInterval(timerInterval);
-            document.getElementById('timer').innerText = "00.000";
-            document.getElementById('timer-start').innerText = "00.000";
-            if(role === 'goal') {
-                showScreen('goal-screen');
-                recordedChunks = [];
-            }
+            if(document.getElementById('timer')) document.getElementById('timer').innerText = "00.000";
+            if(document.getElementById('timer-start')) document.getElementById('timer-start').innerText = "00.000";
+            if(role === 'goal') { showScreen('goal-screen'); recordedChunks = []; }
         });
 
         function sendReset() { socket.emit("reset_signal", roomId); }
 
+        // --- 記録管理機能 ---
         function saveRecord() {
             const name = prompt("選手名を入力してください:");
             if (!name) return;
             const time = document.getElementById('adjust-time').innerText;
             const records = JSON.parse(localStorage.getItem('running_records') || '[]');
-            records.unshift({ name, time, date: new Date().toLocaleString() });
+            records.unshift({ name, time, id: Date.now() });
             localStorage.setItem('running_records', JSON.stringify(records));
-            updateRecordsDisplay(); sendReset();
+            updateRecordsDisplay();
+            sendReset();
+        }
+
+        function deleteRecord(id) {
+            if(!confirm("この記録を削除しますか？")) return;
+            let records = JSON.parse(localStorage.getItem('running_records') || '[]');
+            records = records.filter(r => r.id !== id);
+            localStorage.setItem('running_records', JSON.stringify(records));
+            updateRecordsDisplay();
+        }
+
+        function clearAllRecords() {
+            if(!confirm("すべての記録を削除しますか？")) return;
+            localStorage.removeItem('running_records');
+            updateRecordsDisplay();
         }
 
         function updateRecordsDisplay() {
             const records = JSON.parse(localStorage.getItem('running_records') || '[]');
             const content = document.getElementById('records-content');
-            if(content) content.innerHTML = records.slice(0, 5).map(r => `<div>${r.name}: ${r.time}s</div>`).join('');
+            if(!content) return;
+            if(records.length === 0) {
+                content.innerHTML = '<div style="color:#666; padding:10px;">記録なし</div>';
+                return;
+            }
+            content.innerHTML = records.map(r => `
+                <div class="record-item">
+                    <div class="record-info">
+                        <span class="record-name">${r.name}</span>
+                        <span class="record-time">${r.time}s</span>
+                    </div>
+                    <button class="btn-del" onclick="deleteRecord(${r.id})">削除</button>
+                </div>
+            `).join('');
         }
 
         function step(val) { const pb = document.getElementById('playback'); pb.pause(); pb.currentTime += val; }
-
         function runTimer(base, id) {
             if(timerInterval) clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 const diff = (Date.now() + offset - base) / 1000;
-                if(diff > 0) document.getElementById(id).innerText = diff.toFixed(3);
+                const el = document.getElementById(id);
+                if(el && diff > 0) el.innerText = diff.toFixed(3);
             }, 35);
         }
-
         function showScreen(id) {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
             document.getElementById(id).classList.add('active');
         }
-
         function dissolveRoom() { if(confirm("解散しますか？")) socket.emit("dissolve_room", roomId); }
         socket.on("room_dissolved", () => { window.location.href = 'index.html'; });
         function updateAdjustTime() {
